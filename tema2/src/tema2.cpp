@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <fstream>
 #include <vector>
+#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -13,10 +14,8 @@
 #define HASH_SIZE 32
 #define MAX_CHUNKS 100
 
-#define DOWNLOAD_HASHES_TAG 1
-#define DOWNLOAD_SWARM_TAG 2
-#define UPLOAD_FILE_TAG 3
-#define UPLOAD_HASH_TAG 4
+#define TO_UPLOAD 1
+#define TO_DOWNLOAD 2
 
 using namespace std;
 
@@ -35,9 +34,6 @@ struct tracker_info{
 
     // Map which contains the file and the hashes associated.
     unordered_map<string, string> files_info;
-
-    // Uploads associated to each peer.
-    vector<pair<int, int>> uploads;
 };
 
 void MPI_Recv_nolen(void *buf, int *source, MPI_Datatype datatype, int actual_source,
@@ -56,10 +52,15 @@ void MPI_Recv_nolen(void *buf, int *source, MPI_Datatype datatype, int actual_so
     }
 }
 
+bool comparator(pair<int, int>& pair1, pair<int, int>& pair2) {
+    // Comparator for sorting the uploaders.
+    return pair1.second < pair2.second;
+}
+
 void write_logs(int rank, string filename, vector<string> hashes) {
     // Create a file and write the hash info inside the file.
     ofstream fout;
-    string file = "in" + to_string(rank) + "_" + filename;
+    string file = "client" + to_string(rank) + "_" + filename;
     fout.open(file);
     for(unsigned int i = 0; i < hashes.size(); i++) {
         fout << hashes[i] << endl;
@@ -72,15 +73,16 @@ void *download_thread_func(void *arg)
 {
     // Thread for downloading.
     peer_info curr_info = *(peer_info*) arg;
-    int recv_files = 10, source;
     char recv_buffer[HASH_SIZE * MAX_CHUNKS + 1], aux[HASH_SIZE + 1],
             send_buffer[HASH_SIZE];
-    int num_buffer[curr_info.numtasks + 1];
+    int recv_files = 10, source, num_buffer[curr_info.numtasks + 1];
     MPI_Status status;
     bool found;
 
     // Received information.
     tracker_info recv_info;
+    unordered_map<int, int> uploads(curr_info.numtasks + 1);
+    vector<pair<int, int>> sorted_uploads;
 
     while(1) {
         if(recv_files >= 10) {
@@ -92,49 +94,65 @@ void *download_thread_func(void *arg)
                 
                 // Receive hashes.
                 MPI_Recv_nolen(recv_buffer, &source, MPI_CHAR, TRACKER_RANK,
-                                DOWNLOAD_HASHES_TAG, MPI_COMM_WORLD, &status);
+                                TO_DOWNLOAD, MPI_COMM_WORLD, &status);
                 recv_info.files_info[it.first] = recv_buffer;
 
                 // Receive seeds.
                 MPI_Recv_nolen(num_buffer, &source, MPI_INT, TRACKER_RANK,
-                                DOWNLOAD_SWARM_TAG, MPI_COMM_WORLD, &status);
+                                TO_DOWNLOAD, MPI_COMM_WORLD, &status);
                 for(int i = 0; num_buffer[i] != -1; i++) {
                     recv_info.swarms[it.first].insert(num_buffer[i]);
                 }
             }
         }
 
-        // Go through each seed/peer and look for the needed hash.
-        for(auto it = curr_info.needed_files.begin(); it != curr_info.needed_files.end(); it) {
-            found = false;
-            for(auto it2 : recv_info.swarms[it->first]) {
-                // Send filename.
-                MPI_Send(it->first.c_str(), it->first.size(), MPI_CHAR, it2, UPLOAD_FILE_TAG,
-                            MPI_COMM_WORLD);
-                // Send hash.
-                MPI_Send(recv_info.files_info[it->first].c_str() + HASH_SIZE *
-                            it->second.size(), HASH_SIZE, MPI_CHAR, it2, UPLOAD_HASH_TAG,
-                            MPI_COMM_WORLD);
+        // Get the num of uploads from each peer.
+        strcpy(send_buffer, "UPLOADS");
+        for(int i = 1; i < curr_info.numtasks; i++) {
+            MPI_Send(send_buffer, strlen(send_buffer), MPI_CHAR, i, TO_UPLOAD, MPI_COMM_WORLD);
+            MPI_Recv(&uploads[i], 1, MPI_INT, i, TO_DOWNLOAD, MPI_COMM_WORLD, &status);
+        }
+        sorted_uploads = vector<pair<int, int>>(uploads.begin(), uploads.end());
+        sort(sorted_uploads.begin(), sorted_uploads.end(), comparator);
 
-                // Recv ACK.
-                MPI_Recv_nolen(recv_buffer, &source, MPI_CHAR, it2, DOWNLOAD_HASHES_TAG,
-                                MPI_COMM_WORLD, &status);
-                if(strcmp(recv_buffer, "ACK") == 0) {
-                    found = true;
-                    strncpy(aux, recv_info.files_info[it->first].c_str() + HASH_SIZE *
-                            it->second.size(), HASH_SIZE);
-                    it->second.push_back(aux);
-                    recv_files++;
-                    
-                    // Check if we received all the hashes for the file.
-                    if(recv_info.files_info[it->first].size() == it->second.size()) {
-                        write_logs(curr_info.rank, it->first, it->second);
+        // Go through each seed/peer and look for the needed hash.
+        for(auto it = curr_info.needed_files.begin(); it != curr_info.needed_files.end(); it = it) {
+            found = false;
+            for(auto it2 : sorted_uploads) {
+                if(recv_info.swarms[it->first].find(it2.first) != recv_info.swarms[it->first].end()) {
+                    strcpy(send_buffer, "EXTRACT");
+                    MPI_Send(send_buffer, strlen(send_buffer), MPI_CHAR, it2.first, TO_UPLOAD, MPI_COMM_WORLD);
+
+                    // Send filename.
+                    MPI_Send(it->first.c_str(), it->first.size(), MPI_CHAR, it2.first, TO_UPLOAD,
+                                MPI_COMM_WORLD);
+
+                    // Send hash.
+                    MPI_Send(recv_info.files_info[it->first].c_str() + HASH_SIZE *
+                                it->second.size(), HASH_SIZE, MPI_CHAR, it2.first, TO_UPLOAD,
+                                MPI_COMM_WORLD);
+
+                    // Recv ACK.
+                    MPI_Recv_nolen(recv_buffer, &source, MPI_CHAR, it2.first, TO_DOWNLOAD,
+                                    MPI_COMM_WORLD, &status);
+
+                    if(strcmp(recv_buffer, "ACK") == 0) {
+                        strncpy(aux, recv_info.files_info[it->first].c_str() + HASH_SIZE *
+                                it->second.size(), HASH_SIZE);  
+                        it->second.push_back(aux);
+                        recv_files++;
                         
-                        // Set the file to seeding status.
-                        curr_info.seed_files[it->first] = it->second;
-                        it = curr_info.needed_files.erase(it);
+                        // Check if we received all the hashes for the file.
+                        if(recv_info.files_info[it->first].size() / HASH_SIZE == it->second.size()) {
+                            // Set the file to seeding status.
+                            found = true;
+                            curr_info.seed_files[it->first] = it->second;
+                            write_logs(curr_info.rank, it->first, curr_info.seed_files[it->first]);
+
+                            it = curr_info.needed_files.erase(it);
+                        }
+                        break;
                     }
-                    break;
                 }
             }
 
@@ -162,31 +180,52 @@ void *upload_thread_func(void *arg)
     peer_info curr_info = *(peer_info*) arg;
 
     MPI_Status status;
-    char filename[MAX_FILENAME], search_hash[HASH_SIZE], ack[5];
-    int source;
+    char filename[MAX_FILENAME], search_hash[HASH_SIZE], ack[5], incoming_buff[10];
+    int source, uploads = 0;
 
     // While the peer is active, wait for any peers to ask for files.
     while(curr_info.active) {
-        MPI_Recv_nolen(filename, &source, MPI_CHAR, MPI_ANY_SOURCE, UPLOAD_FILE_TAG,
+        // Wait for an instruction from the downloaders.
+        MPI_Recv_nolen(incoming_buff, &source, MPI_CHAR, MPI_ANY_SOURCE, TO_UPLOAD,
                         MPI_COMM_WORLD, &status);
-        MPI_Recv_nolen(search_hash, &source, MPI_CHAR, source, UPLOAD_HASH_TAG,
-                        MPI_COMM_WORLD, &status);
-        if(curr_info.seed_files.find(filename) != curr_info.seed_files.end()) {
-            // The peer is seeding the file.
-            strcpy(ack, "ACK");
-        } else {
-            // The peer is receiving the file.
-            strcpy(ack, "NACK");
-            for(unsigned int i = 0; i < curr_info.needed_files[filename].size(); i++) {
-                if(strcmp(search_hash, curr_info.needed_files[filename][i].c_str()) == 0) {
-                    strcpy(ack, "ACK");
-                    break;
+        if(strcmp(incoming_buff, "FIN") == 0) {
+            // Message received from tracker, shut down the uploader.
+            curr_info.active = false;
+            break;
+
+        } else if(strcmp(incoming_buff, "UPLOADS") == 0) {
+            // Send to the peer the num of uploads.
+            MPI_Send(&uploads, 1, MPI_INT, source, TO_DOWNLOAD, MPI_COMM_WORLD);
+        } else if(strcmp(incoming_buff, "EXTRACT") == 0) {
+            // Peer wants to check if we have hashes.
+            MPI_Recv_nolen(filename, &source, MPI_CHAR, source, TO_UPLOAD, MPI_COMM_WORLD, &status);
+            if(strcmp(filename, "FIN") == 0) {
+                curr_info.active = false;
+                break;
+            }
+            MPI_Recv_nolen(search_hash, &source, MPI_CHAR, source, TO_UPLOAD,
+                            MPI_COMM_WORLD, &status);
+            if(curr_info.seed_files.find(filename) != curr_info.seed_files.end()) {
+                // The peer is seeding the file.
+                strcpy(ack, "ACK");
+                uploads++;
+            } else {
+                // The peer is receiving the file.
+                strcpy(ack, "NACK");
+                for(unsigned int i = 0; i < curr_info.needed_files[filename].size(); i++) {
+                    if(strcmp(search_hash, curr_info.needed_files[filename][i].c_str()) == 0) {
+                        strcpy(ack, "ACK");
+                        uploads++;
+                        break;
+                    }
                 }
             }
+            // Send ACK/NACK.
+            MPI_Send(ack, strlen(ack), MPI_CHAR, source, TO_DOWNLOAD, MPI_COMM_WORLD);
         }
-        // Send ACK.
-        MPI_Send(ack, strlen(ack), MPI_CHAR, source, DOWNLOAD_HASHES_TAG, MPI_COMM_WORLD);
     }
+
+    cout << "I am uploader " << curr_info.rank << " with " << uploads << " uploads " << endl;
 
     return NULL;
 }
@@ -242,7 +281,6 @@ void tracker(int numtasks, int rank) {
     // The initialization is done, start the activity.
     for(int i = 1; i < numtasks; i++) {
         MPI_Send(ack, strlen(ack), MPI_CHAR, i, 0, MPI_COMM_WORLD);
-        curr_tracker_info.uploads.push_back({0, i});
     }
 
     // Start the tracker.
@@ -260,7 +298,7 @@ void tracker(int numtasks, int rank) {
             // Send hashes.
             MPI_Send(curr_tracker_info.files_info[message].c_str(),
                     curr_tracker_info.files_info[message].length(), MPI_CHAR,
-                    source, DOWNLOAD_HASHES_TAG, MPI_COMM_WORLD);
+                    source, TO_DOWNLOAD, MPI_COMM_WORLD);
 
             // Send swarm.
             counter = 0;
@@ -269,14 +307,14 @@ void tracker(int numtasks, int rank) {
                 counter++;
             }
             MPI_Send(&send_num_buffer, counter, MPI_INT, source,
-                    DOWNLOAD_SWARM_TAG, MPI_COMM_WORLD);
+                    TO_DOWNLOAD, MPI_COMM_WORLD);
         }
     }
 
     // Send a message so that the peers know that the tracker is shutting down.
     strcpy(ack, "FIN");
     for(int i = 1; i < numtasks; i++) {
-        MPI_Send(ack, strlen(ack), MPI_CHAR, i, 0, MPI_COMM_WORLD);
+        MPI_Send(ack, strlen(ack), MPI_CHAR, i, TO_UPLOAD, MPI_COMM_WORLD);
     }
 }
 
@@ -359,8 +397,7 @@ void peer(int numtasks, int rank) {
     pthread_t download_thread;
     pthread_t upload_thread;
     void *status;
-    int r, source;
-    char fin[5];
+    int r;
 
     // Gather peer's info.
     peer_info curr_info;
