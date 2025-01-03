@@ -22,7 +22,7 @@ using namespace std;
 // Info held by a peer.
 struct peer_info {
     // Storage for the name of the file and the hashes associated to the file.
-    unordered_map<string, vector<string>> seed_files, needed_files;
+    unordered_map<string, vector<string>> *seed_files, *needed_files;
     int rank, numtasks;
     bool active;
 };
@@ -88,7 +88,7 @@ void *download_thread_func(void *arg)
         if(recv_files >= 10) {
             // Send a request for each file that we want to download to the tracker.
             recv_files = 0;
-            for(auto it : curr_info.needed_files) {
+            for(auto it : *curr_info.needed_files) {
                 MPI_Send(it.first.c_str(), it.first.length(), MPI_CHAR, TRACKER_RANK,
                             0, MPI_COMM_WORLD);
                 
@@ -116,7 +116,7 @@ void *download_thread_func(void *arg)
         sort(sorted_uploads.begin(), sorted_uploads.end(), comparator);
 
         // Go through each seed/peer and look for the needed hash.
-        for(auto it = curr_info.needed_files.begin(); it != curr_info.needed_files.end(); it = it) {
+        for(auto it = (*curr_info.needed_files).begin(); it != (*curr_info.needed_files).end(); it = it) {
             found = false;
             for(auto it2 : sorted_uploads) {
                 if(recv_info.swarms[it->first].find(it2.first) != recv_info.swarms[it->first].end()) {
@@ -146,10 +146,10 @@ void *download_thread_func(void *arg)
                         if(recv_info.files_info[it->first].size() / HASH_SIZE == it->second.size()) {
                             // Set the file to seeding status.
                             found = true;
-                            curr_info.seed_files[it->first] = it->second;
-                            write_logs(curr_info.rank, it->first, curr_info.seed_files[it->first]);
+                            (*curr_info.seed_files)[it->first] = it->second;
+                            write_logs(curr_info.rank, it->first, (*curr_info.seed_files)[it->first]);
 
-                            it = curr_info.needed_files.erase(it);
+                            it = (*curr_info.needed_files).erase(it);
                         }
                         break;
                     }
@@ -162,7 +162,7 @@ void *download_thread_func(void *arg)
         }
 
         // Check if downloading is done.
-        if(curr_info.needed_files.size() == 0) {
+        if((*curr_info.needed_files).size() == 0) {
             break;
         }
     }
@@ -205,15 +205,15 @@ void *upload_thread_func(void *arg)
             }
             MPI_Recv_nolen(search_hash, &source, MPI_CHAR, source, TO_UPLOAD,
                             MPI_COMM_WORLD, &status);
-            if(curr_info.seed_files.find(filename) != curr_info.seed_files.end()) {
+            if((*curr_info.seed_files).find(filename) != (*curr_info.seed_files).end()) {
                 // The peer is seeding the file.
                 strcpy(ack, "ACK");
                 uploads++;
             } else {
                 // The peer is receiving the file.
                 strcpy(ack, "NACK");
-                for(unsigned int i = 0; i < curr_info.needed_files[filename].size(); i++) {
-                    if(strcmp(search_hash, curr_info.needed_files[filename][i].c_str()) == 0) {
+                for(unsigned int i = 0; i < (*curr_info.needed_files)[filename].size(); i++) {
+                    if(strcmp(search_hash, (*curr_info.needed_files)[filename][i].c_str()) == 0) {
                         strcpy(ack, "ACK");
                         uploads++;
                         break;
@@ -338,7 +338,7 @@ void extract_info(peer_info &curr_info, int rank) {
         // Insert hashes inside the map.
         for(int j = 0; j < num_hash; j++) {
             fin >> hash;
-            curr_info.seed_files[filename_info].push_back(hash);
+            (*curr_info.seed_files)[filename_info].push_back(hash);
         }
     }
 
@@ -346,7 +346,7 @@ void extract_info(peer_info &curr_info, int rank) {
     fin >> num_files;
     for(int i = 0; i < num_files; i++) {
         fin >> filename_info;
-        curr_info.needed_files.insert({filename_info, {}});
+        (*curr_info.needed_files).insert({filename_info, {}});
     }
     fin.close();
 }
@@ -359,7 +359,7 @@ void communicate_tracker(peer_info curr_info) {
     int source;
 
     // Go through each file which is seeded.
-    for(auto it : curr_info.seed_files) {
+    for(auto it : *curr_info.seed_files) {
         MPI_Send(it.first.c_str(), it.first.length(), MPI_CHAR, TRACKER_RANK,
                     0, MPI_COMM_WORLD);
 
@@ -404,6 +404,8 @@ void peer(int numtasks, int rank) {
     curr_info.active = true;
     curr_info.rank = rank;
     curr_info.numtasks = numtasks;
+    curr_info.seed_files = new unordered_map<string, vector<string>>();
+    curr_info.needed_files = new unordered_map<string,vector<string>>();
 
     extract_info(curr_info, rank);
 
@@ -434,6 +436,9 @@ void peer(int numtasks, int rank) {
         printf("Eroare la asteptarea thread-ului de upload\n");
         exit(-1);
     }
+
+    delete curr_info.seed_files;
+    delete curr_info.needed_files;
 }
  
 int main (int argc, char *argv[]) {
