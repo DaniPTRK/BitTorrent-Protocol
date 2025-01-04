@@ -29,7 +29,7 @@ interior hash-urile fișierului asociat;
 * rank reprezintă rank-ul task-ului ce reprezintă peer-ul;
 * numtasks indică numărul de task-uri/peers ce utilizează tracker-ul;
 * active indică dacă peer-ul este sau nu conectat la tracker;
-* seed_files și needed_files sunt pointer întrucât am dorit ca informațiile ce se află
+* seed_files și needed_files sunt pointeri întrucât am dorit ca informațiile ce se află
 în interiorul celor 2 variabile să împărțite între thread-ul de upload și cel de download.
 
 După ce toate informațiile sunt extrase, în communicate_tracker() are loc comunicarea dintre
@@ -68,7 +68,7 @@ acest tip, astfel că după ce se trimit destule DONE-uri, iese din loop și tri
 clienților un ACK pentru a putea începe download-ul / upload-ul.
 
 În tracker, se așteaptă constant un mesaj de la orice sursă, de pe orice tag. Dacă mesajul
-este "FIN", înseamnă că un client a terminat descărcarea de fișier și doar va da seed la
+este "FIN", înseamnă că un client a terminat descărcarea de fișiere și doar va da seed la
 ce fișiere deține. Dacă mesajul nu este de acest fel, clientul este trecut în swarm-ul
 fișierului din mesaj și îi sunt trimise hash-ul și swarm-urile. Când toți clienții au
 terminat de descărcat, tracker-ul iese din loop și trimite un "FIN" la toate thread-urile
@@ -78,11 +78,11 @@ de upload pentru ca acestea să își încheie activitatea.
 Recv. Thread-urile primesc ca argument structura peer_info asociată task-ului părinte.
 
 În download, se verifică după fiecare descărcarea dacă numărul de segmente este mai mare cu
-10, dacă da, are loc o actualizare a swarm-urilor. De asemenea, după fiecare descărcare,
-download-ul trimite către uploaderi o cerere pentru a obține numărul de uploads pe care îl
-are fiecare thread. După ce primește numărul de uploads, sortează valorile primite și va
-alege, pentru fișierele pe care vrea să le descarce, pe acei peers care au numărul de
-descărcări minim, pentru a putea distribui cât mai eficient și mai balansat munca. După
+10, dacă da, are loc o actualizare a swarm-urilor în clienți. De asemenea, după fiecare
+descărcare, download-ul trimite către uploaderi o cerere pentru a obține numărul de
+uploads pe care îl are fiecare thread. După ce primește numărul de uploads, sortează valorile
+primite și va alege, pentru fișierele pe care vrea să le descarce, pe acei peers care au numărul
+de descărcări minim, pentru a putea distribui cât mai eficient și mai balansat munca. După
 ce se obține numărul de uploads, download-ul trece prin toate fișierele pe care task-ul
 le dorește și caută în swarm peers/seeds ce pot oferi segmente din fișier. Astfel,
 download trimite o instrucțiune "EXTRACT" către upload, după care trimite numele fișierului
@@ -109,4 +109,4 @@ upload-ul va căuta prin toate hash-urile descărcate momentan și va trimite un
 peer-ul are hash-ul descărcat. În caz contrar, se trimite un NACK. La fiecare ACK, nr
 de upload-uri crește.
 
-După încheierea thread-urilor, tracker-ul și clienții încheie activitatea.
+După închiderea thread-urilor, tracker-ul și clienții încheie activitatea.
