@@ -229,8 +229,6 @@ void *upload_thread_func(void *arg)
         }
     }
 
-    cout << "I am uploader " << curr_info.rank << " with " << uploads << " uploads " << endl;
-
     return NULL;
 }
 
