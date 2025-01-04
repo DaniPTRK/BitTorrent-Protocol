@@ -14,6 +14,7 @@
 #define HASH_SIZE 32
 #define MAX_CHUNKS 100
 
+// Tags used for sending/receiving data to uploader & downloader.
 #define TO_UPLOAD 1
 #define TO_DOWNLOAD 2
 
@@ -118,7 +119,9 @@ void *download_thread_func(void *arg)
         // Go through each seed/peer and look for the needed hash.
         for(auto it = (*curr_info.needed_files).begin(); it != (*curr_info.needed_files).end(); it = it) {
             found = false;
+            // Find the peer with the least num of uploads.
             for(auto it2 : sorted_uploads) {
+                // If peer is found, extract an ACK for the hash.
                 if(recv_info.swarms[it->first].find(it2.first) != recv_info.swarms[it->first].end()) {
                     strcpy(send_buffer, "EXTRACT");
                     MPI_Send(send_buffer, strlen(send_buffer), MPI_CHAR, it2.first, TO_UPLOAD, MPI_COMM_WORLD);
@@ -137,6 +140,7 @@ void *download_thread_func(void *arg)
                                     MPI_COMM_WORLD, &status);
 
                     if(strcmp(recv_buffer, "ACK") == 0) {
+                        // ACK received, keep the acknowledged hash.
                         strncpy(aux, recv_info.files_info[it->first].c_str() + HASH_SIZE *
                                 it->second.size(), HASH_SIZE);  
                         it->second.push_back(aux);
@@ -232,7 +236,7 @@ void *upload_thread_func(void *arg)
 
 void populate_swarm(unordered_map<string, unordered_set<int>>& swarms,
                     unordered_map<string, string>& files_info, int numtasks) {
-    // Populate the swarm map while there are active peers.
+    // Populate the swarm map & gather info about the files.
     MPI_Status status;
     string ack;
     char received_file[MAX_FILENAME], received_hash[HASH_SIZE * MAX_CHUNKS + 1];
